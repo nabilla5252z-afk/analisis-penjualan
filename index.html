@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SEQOIA TEAM - Sales Analysis & BEP Tracker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+        import { getDatabase, ref, set, onValue } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+
+        // ================================================================
+        // ⚙️ KONFIGURASI FIREBASE (GANTI DENGAN MILIK ANDA SENDIRI)
+        // ================================================================
+        const firebaseConfig = {
+            apiKey: "AIzaSyDQnaEQn1Nbl8a3g5-20Hw4SFSyyb7pV-M",
+            authDomain: "keuangan-sidopa.firebaseapp.com",
+            databaseURL: "https://keuangan-sidopa-default-rtdb.asia-southeast1.firebasedatabase.app",
+            projectId: "keuangan-sidopa",
+            storageBucket: "keuangan-sidopa.firebasestorage.app",
+            messagingSenderId: "356763448905",
+            appId: "1:356763448905:web:ba355dc45648761244b198"
+        };
+        // ================================================================
+
+        const app = initializeApp(firebaseConfig);
+        const db = getDatabase(app);
+
+        // State Global Aplikasi
+        let transactions = [];
+        let productChart = null;
+
+        // Helper Format Rupiah
+        const fmt = v => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(v);
+
+        // ----------------------------------------------------------------
+        // Sinkronisasi Data Real-time dari Firebase
+        // ----------------------------------------------------------------
+        onValue(ref(db, 'lunnar/sales_transactions'), snap => {
+            const data = snap.val();
+            transactions = data ? Object.values(data) : [];
+            
+            // Sembunyikan loading overlay jika data sudah siap
+            document.getElementById('loading-overlay').classList.add('hidden');
+            
+            // Perbarui seluruh tampilan Dashboard
+            calculateBusinessMetrics();
+            renderTransactionTable();
+        });
+
+        // ----------------------------------------------------------------
+        // Hitung Metrik & Gambar Grafik (BEP, Omzet, Produk Populer)
+        // ----------------------------------------------------------------
+        function calculateBusinessMetrics() {
+            let totalOmzet = 0;
+            let totalUntung = 0;
+            // Target Biaya Tetap Operasional Bulanan untuk Tracker BEP
+            const biayaTetapBulanan = 500000; 
+
+            const productStats = { 'Sinori': 0, 'Siori': 0, 'Sispicy': 0 };
+
+            transactions.forEach(t => {
+                totalOmzet += t.total_harga;
+                totalUntung += t.keuntungan;
+
+                // Hitung kuantitas per produk
+                if (productStats[t.produk] !== undefined) {
+                    productStats[t.produk] += t.qty;
+                }
+            });
+
+            // Tampilkan ke UI Card
+            document.getElementById('card-omzet').textContent = fmt(totalOmzet);
+            document.getElementById('card-untung').textContent = fmt(totalUntung);
+            document.getElementById('card-qty-terjual').textContent = Object.values(productStats).reduce((a,b) => a+b, 0) + " Pcs";
+
+            // Evaluasi Status BEP
+            const bepProgressEl = document.getElementById('bep-status');
+            const targetBepEl = document.getElementById('target-bep');
+            targetBepEl.textContent = fmt(biayaTetapBulanan);
+
+            if (totalUntung >= biayaTetapBulanan) {
+                bepProgressEl.innerHTML = `<span class="text-emerald-600 font-bold"><i class="fas fa-check-circle mr-1"></i> Sudah Capai BEP (Surplus: ${fmt(totalUntung - biayaTetapBulanan)})</span>`;
+            } else {
+                const kurangnya = biayaTetapBulanan - totalUntung;
+                bepProgressEl.innerHTML = `<span class="text-amber-600 font-medium">Kurang <strong class="font-bold">${fmt(kurangnya)}</strong> keuntungan lagi untuk BEP.</span>`;
+            }
+
+            // Render Chart.js
+            const ctx = document.getElementById('chartProduk')?.getContext('2d');
+            if (ctx) {
+                if (productChart) productChart.destroy();
+                productChart = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: Object.keys(productStats),
+                        datasets: [{
+                            label: 'Jumlah Terjual (Pcs)',
+                            data: Object.values(productStats),
+                            backgroundColor: ['#f97316', '#3b82f6', '#ef4444'],
+                            borderRadius: 6
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        scales: { y: { beginAtZero: true } }
+                    }
+                });
+            }
+        }
+
+        // ----------------------------------------------------------------
+        // Kirim Form Data Penjualan ke Firebase
+        // ----------------------------------------------------------------
+        document.getElementById('sales-form').onsubmit = async (e) => {
+            e.preventDefault();
+            const btn = document.getElementById('submit-btn');
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Menyimpan...';
+
+            const produk = document.getElementById('input-produk').value;
+            const qty = parseInt(document.getElementById('input-qty').value);
+            const hargaJual = parseInt(document.getElementById('input-harga-jual').value);
+            const hargaModal = parseInt(document.getElementById('input-harga-modal').value);
+
+            const total_harga = hargaJual * qty;
+            const keuntungan = (hargaJual - hargaModal) * qty;
+            const id = Date.now();
+
+            const txData = {
+                id,
+                tanggal: new Date().toLocaleDateString('id-ID'),
+                produk,
+                qty,
+                total_harga,
+                keuntungan
+            };
+
+            // Simpan ke array lokal lalu dorong ke database jalur lunnar/sales_transactions
+            const updatedTransactions = [...transactions, txData];
+            
+            try {
+                await set(ref(db, 'lunnar/sales_transactions'), updatedTransactions);
+                e.target.reset();
+                alert('✅ Data Penjualan Berhasil Disimpan!');
+            } catch (error) {
+                console.error(error);
+                alert('❌ Gagal menyimpan ke Firebase.');
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fas fa-paper-plane mr-2"></i>Simpan Penjualan';
+            }
+        };
+
+        // ----------------------------------------------------------------
+        // Render Tabel Riwayat Transaksi
+        // ----------------------------------------------------------------
+        function renderTransactionTable() {
+            const tbody = document.getElementById('table-body');
+            if(transactions.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="5" class="text-center p-4 text-slate-400 text-sm">Belum ada transaksi masukan harian.</td></tr>`;
+                return;
+            }
+
+            tbody.innerHTML = transactions.slice().reverse().map(t => `
+                <tr class="border-b hover:bg-slate-50 text-xs text-slate-700">
+                    <td class="p-3 font-mono text-slate-400">${t.tanggal}</td>
+                    <td class="p-3 font-bold">${t.produk}</td>
+                    <td class="p-3 text-center">${t.qty} Pcs</td>
+                    <td class="p-3 text-right font-semibold">${fmt(t.total_harga)}</td>
+                    <td class="p-3 text-right text-emerald-600 font-semibold">${fmt(t.keuntungan)}</td>
+                </tr>
+            `).join('');
+        }
+    </script>
+</head>
+<body class="bg-slate-50 text-slate-800 font-sans antialiased">
+
+    <div id="loading-overlay" class="fixed inset-0 bg-slate-900 text-white flex flex-col justify-center items-center z-[9999] transition-opacity duration-300">
+        <i class="fas fa-circle-notch fa-spin text-4xl text-orange-500 mb-3"></i>
+        <p class="text-sm font-semibold tracking-wide">Menghubungkan ke Realtime Database...</p>
+    </div>
+
+    <header class="bg-slate-900 text-white px-6 py-4 flex justify-between items-center shadow-md">
+        <div class="flex items-center gap-3">
+            <div class="w-8 h-8 rounded-lg bg-orange-500 flex items-center justify-center text-white font-black">S</div>
+            <h1 class="text-lg font-black tracking-wider text-orange-400">SEQOIA SALES ANALYSIS</h1>
+        </div>
+        <div class="text-xs bg-slate-800 px-3 py-1.5 rounded-full border border-slate-700 text-slate-300">
+            <i class="fas fa-wifi text-emerald-400 mr-1.5 animate-pulse"></i> Monitoring Online
+        </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto p-4 md:p-6">
+        
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+            <div class="bg-white p-5 rounded-xl shadow-sm border border-slate-100">
+                <div class="text-slate-400 text-[11px] uppercase font-bold tracking-wider mb-1">💰 Total Omzet Penjualan</div>
+                <div id="card-omzet" class="text-xl font-black text-slate-800">Rp0</div>
+            </div>
+            <div class="bg-white p-5 rounded-xl shadow-sm border border-slate-100">
+                <div class="text-slate-400 text-[11px] uppercase font-bold tracking-wider mb-1">📈 Keuntungan Bersih (Margin)</div>
+                <div id="card-untung" class="text-xl font-black text-emerald-600">Rp0</div>
+            </div>
+            <div class="bg-white p-5 rounded-xl shadow-sm border border-slate-100">
+                <div class="text-slate-400 text-[11px] uppercase font-bold tracking-wider mb-1">📦 Volume Produk Terjual</div>
+                <div id="card-qty-terjual" class="text-xl font-black text-blue-600">0 Pcs</div>
+            </div>
+            <div class="bg-white p-5 rounded-xl shadow-sm border border-slate-100">
+                <div class="text-slate-400 text-[11px] uppercase font-bold tracking-wider mb-1">🎯 Target BEP Operasional</div>
+                <div id="target-bep" class="text-sm font-bold text-slate-700 mb-1">Rp0</div>
+                <div id="bep-status" class="text-xs text-slate-500">Menganalisis...</div>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            
+            <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-100 h-fit">
+                <h2 class="text-sm font-bold text-slate-700 mb-4 flex items-center gap-2">
+                    <i class="fas fa-cart-plus text-orange-500"></i> Input Transaksi Baru
+                </h2>
+                <form id="sales-form" class="space-y-4">
+                    <div>
+                        <label class="block text-xs font-bold text-slate-500 mb-1">Pilih Produk Snack</label>
+                        <select id="input-produk" class="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-sm focus:outline-orange-500" required>
+                            <option value="Sinori">Sinori</option>
+                            <option value="Siori">Siori</option>
+                            <option value="Sispicy">Sispicy</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-500 mb-1">Jumlah Terjual (Qty)</label>
+                        <input type="number" id="input-qty" min="1" placeholder="Contoh: 10" class="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-sm focus:outline-orange-500" required>
+                    </div>
+                    <div class="grid grid-cols-2 gap-2">
+                        <div>
+                            <label class="block text-xs font-bold text-slate-500 mb-1">Harga Modal / Pcs</label>
+                            <input type="number" id="input-harga-modal" placeholder="3500" class="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-sm focus:outline-orange-500" required>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-slate-500 mb-1">Harga Jual / Pcs</label>
+                            <input type="number" id="input-harga-jual" placeholder="5000" class="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-sm focus:outline-orange-500" required>
+                        </div>
+                    </div>
+                    <button type="submit" id="submit-btn" class="w-full bg-orange-500 text-white font-bold py-2.5 rounded-lg text-xs hover:bg-orange-600 transition shadow-sm flex items-center justify-center">
+                        <i class="fas fa-paper-plane mr-2"></i> Simpan Penjualan
+                    </button>
+                </form>
+            </div>
+
+            <div class="lg:col-span-2 space-y-6">
+                <div class="bg-white p-5 rounded-xl shadow-sm border border-slate-100">
+                    <h2 class="text-sm font-bold text-slate-700 mb-3 flex items-center gap-2">
+                        <i class="fas fa-chart-bar text-orange-500"></i> Statistik Produk Paling Diminati
+                    </h2>
+                    <div class="h-48 relative w-full">
+                        <canvas id="chartProduk"></canvas>
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
+                    <div class="p-4 border-b border-slate-100 bg-slate-50/50">
+                        <h2 class="text-sm font-bold text-slate-700 flex items-center gap-2">
+                            <i class="fas fa-history text-orange-500"></i> Log Riwayat Transaksi Masuk
+                        </h2>
+                    </div>
+                    <div class="overflow-x-auto max-h-60">
+                        <table class="w-full text-left border-collapse">
+                            <thead>
+                                <tr class="bg-slate-100 text-[10px] font-bold text-slate-500 uppercase tracking-wider border-b">
+                                    <th class="p-3">Tanggal</th>
+                                    <th class="p-3">Nama Produk</th>
+                                    <th class="p-3 text-center">Kuantitas</th>
+                                    <th class="p-3 text-right">Total Pendapatan</th>
+                                    <th class="p-3 text-right">Profit Bersih</th>
+                                </tr>
+                            </thead>
+                            <tbody id="table-body">
+                                </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </main>
+
+</body>
+</html>
